@@ -33,9 +33,13 @@
     return [type, id].join("_");
   }
 
-  function pouchIdToId(id){
+  function pouchIdToIdType(id){
     var idx = id.indexOf("_");
-    return (idx === -1)? id : id.substring(idx+1);
+    return (idx === -1)? [id, null] : [id.substring(idx+1), id.substring(0, idx)];
+  }
+
+  function pouchIdToId(id){
+    return pouchIdToIdType(id)[0];
   }
 
   DS.PouchDBSerializer = DS.JSONSerializer.extend({
@@ -61,14 +65,16 @@
       this._super(record, json, relationship);
 
       var key = relationship.key;
-      var relationshipType = DS.RelationshipChange.determineRelationshipType(record.constructor, relationship);
-      if (relationshipType === 'manyToOne') {
-        json[key] = get(record, key).mapBy('id').concat([]);
-      }
+      json[key] = get(record, key).map(function(relItem){
+        return idToPouchId(relItem.get('id'), relItem.constructor || relItem.type || relationship.type);
+      }).concat([]);
     },
 
     serializeBelongsTo: function(record, json, relationship) {
       this._super(record, json, relationship);
+      var key = relationship.key;
+      var type = relationship.type;
+      if(json[key]) json[key] = idToPouchId(json[key], type);
     },
 
     normalize: function(type, hash) {
@@ -86,26 +92,48 @@
       payload = this.normalize(type, payload);
       type.eachRelationship(function(accessor, relationship){
         if(relationship.kind == "hasMany" && payload[accessor]){
-          payload[accessor] = Ember.A(payload[accessor]);
+          var items = Ember.makeArray(payload[accessor]);
+          if(relationship.options.polymorphic){
+            items = map.call(items, function(i){
+              var idtype = pouchIdToIdType(i);
+              return {id: idtype[0], type: idtype[1]};
+            });
+          } else {
+            items = map.call(items, function(i){
+              var id = pouchIdToId(i);
+              return id;
+            });
+          }
+          payload[accessor] = Ember.A(items);
+        }else if(relationship.kind == "belongsTo" && payload[accessor]){
+          var item = payload[accessor];
+          if(relationship.options.polymorphic){
+            var idtype = pouchIdToIdType(item);
+            item = {id: idtype[0], type: idtype[1]};
+          } else {
+            item = pouchIdToId(item);
+
+          }
+          payload[accessor] = item;
         }
       });
 
       if(payload['_embedded']){
         var sideload = payload._embedded;
         delete payload._embedded;
-        for(prop in sideload){
+        for(var prop in sideload){
           if(!sideload.hasOwnProperty(prop)) next;
           var typeName = this.typeForRoot(prop),
               type = store.modelFor(typeName),
               typeSerializer = store.serializerFor(type);
 
           forEach.call(sideload[prop], function(hash){
-            hash = typeSerializer.normalize(type, hash);
+            hash = typeSerializer.extractSingle(store, type, hash);
             store.push(typeName, hash);
           });
         }
       }
-      return this._super(store, type, payload);
+      return payload;
     },
 
     extractArray: function(store, type, payload){
@@ -113,7 +141,7 @@
         return this.extractSingle(store, type, hash);
       }, this);
 
-      return this._super(store, type, array);
+      return array;
     }
   });
 
@@ -133,10 +161,6 @@
    */
   DS.PouchDBAdapter = DS.Adapter.extend({
     defaultSerializer: "_pouchdb",
-
-    init: function(){
-      this._super();
-    },
 
     /**
      Hook used by the store to generate client-side IDs. This simplifies
@@ -165,17 +189,21 @@
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
-          db.put(hash, function(err, response) {
-            if (!err) {
-              hash = Ember.copy(hash, true);
-              hash._rev = response.rev;
-              Ember.run(null, resolve, hash);
-            } else {
-              _pouchError(reject)(err);
-            }
-          });
+          try{
+            db.put(hash, function(err, response) {
+              if (!err) {
+                hash = Ember.copy(hash, true);
+                hash._rev = response.rev;
+                Ember.run(null, resolve, hash);
+              } else {
+                _pouchError(reject)(err);
+              }
+            });
+          } catch (err){
+            _pouchError(reject)(err);
+          }
         }, _pouchError(reject));
-      });
+      }, 'createRecord in ember-pouchdb-adapter');
     },
 
     /**
@@ -192,21 +220,35 @@
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
-          db.get(hash['_id'], function(getErr, oldHash){
-            db.put(hash, function(err, response) {
-              if (!err) {
-                hash = Ember.copy(hash);
-                hash._rev = response.rev;
-                self._updateRelationships(id, type, oldHash, hash).then(function(){
-                  Ember.run(null, resolve, hash);
+          try {
+            db.get(hash['_id'], function(getErr, oldHash){
+              try {
+                db.put(hash, function(err, response) {
+                  if (!err) {
+                    hash = Ember.copy(hash);
+                    hash._rev = response.rev;
+                    Ember.run.begin();
+                    if(oldHash){
+                      self._updateRelationships(id, type, oldHash, hash).then(function(){
+                        Ember.run(null, resolve, hash);
+                      });
+                    } else {
+                      Ember.run(null, resolve, hash);
+                    }
+                    Ember.run.end();
+                  } else {
+                    _pouchError(reject)(err);
+                  }
                 });
-              } else {
-                pouchError(reject)(err);
+              } catch (err){
+                _pouchError(reject)(err);
               }
             });
-          });
+          } catch (err){
+            _pouchError(reject)(err);
+          }
         }, _pouchError(reject));
-      });
+      }, "updateRecord in ember-pouchdb-adapter");
     },
 
     deleteRecord: function(store, type, record) {
@@ -216,21 +258,31 @@
       
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
-          db.get(hash['_id'], function(getErr, oldHash){
-            db.remove(hash, function(err, response) {
-              if (err) {
-                _pouchError(reject)(err);
-              } else {
-                hash = Ember.copy(hash);
-                hash._rev = response.rev;
-                self._updateRelationships(id, type, oldHash, {}).then(function(){
-                  Ember.run(null, resolve, hash);
+          try {
+            db.get(hash['_id'], function(getErr, oldHash){
+              try {
+                db.remove(hash, function(err, response) {
+                  if (err) {
+                    _pouchError(reject)(err);
+                  } else {
+                    hash = Ember.copy(hash);
+                    hash._rev = response.rev;
+                    Ember.run.begin();
+                    self._updateRelationships(id, type, oldHash, {}).then(function(){
+                      Ember.run(null, resolve, hash);
+                    });
+                    Ember.run.end();
+                  }
                 });
+              } catch (err){
+                _pouchError(reject)(err);
               }
             });
-          });
+          } catch (err){
+            _pouchError(reject)(err);
+          }
         }, _pouchError(reject));
-      });
+      }, "deleteRecord in ember-pouchdb-adapter");
     },
 
     find: function(store, type, id) {
@@ -257,73 +309,93 @@
           forEach.call(ids, function(id){
             var deferred = Ember.RSVP.defer();
             promises.push(deferred.promise);
-            db.allDocs({key: id, include_docs: true}, function(err, response){
-              if(err){
-                Ember.run(null, deferred.reject, err);
-              } else {
-                Ember.run(null, deferred.resolve, response);
-              }
-            });
+            try {
+              db.get(id, function(err, response){
+                if(err){
+                  Ember.run(null, deferred.reject, err);
+                } else {
+                  Ember.run(null, deferred.resolve, response);
+                }
+              });
+            } catch (err){
+              Ember.run(null, deferred.reject, err);
+            }
           });
 
-          Ember.RSVP.all(promises).then(function(responses){
-            forEach.call(responses, function(response){
-              if (response.rows) {
-                forEach.call(response.rows, function(row) {
-                  if(!row["error"]){
-                    data.push(row.doc);
-                  }
-                });
+          Ember.RSVP.all(promises).then(function(docs){
+            forEach.call(docs, function(doc){
+              if (doc && !doc["error"]){
+                data.push(doc);
               }
             });
-            Ember.run(function(){
-              self._resolveRelationships(store, type, data, options).then(function(data){
-                Ember.run(null, resolve, data);
-              });
+            Ember.run.begin();
+            self._resolveRelationships(store, type, data, options).then(function(data){
+              Ember.run(null, resolve, data);
             });
+            Ember.run.end();
           }, _pouchError(reject));
         }, _pouchError(reject));
-      });
+      }, "findMany in ember-pouchdb-adapter");
     },
 
     findAll: function(store, type, options) {
       var self = this,
           start = type.typeKey,
           end = start + '~~',
-          data = Ember.A();
+          data = Ember.A(),
+          queryParams = {};
 
       if(!options) options = {};
       if(Ember.typeOf(options) != 'object') options = {since: options};
       if(Ember.isNone(options.embed)) options.embed = true;
 
+      queryParams['include_docs'] = true;
+      queryParams['startkey'] = start;
+      queryParams['endkey'] = end;
+      if(options.limit){
+        queryParams['limit'] = options.limit;
+      }
+      if(options.skip){
+        queryParams['skip'] = options.skip;
+      }
+
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
-          db.allDocs({include_docs: true, startkey: start, endkey: end}, function(err, response){
-            if (err) {
-              _pouchError(reject)(err);
-            } else {
-              if (response.rows) {
-                forEach.call(response.rows, function(row) {
-                  if(!row["error"]){
-                    data.push(row.doc);
-                  } else {
-                    console.log('cannot find', row.key +":", row.error);
-                  }
+          try {
+            db.allDocs(queryParams, function(err, response){
+              if (err) {
+                _pouchError(reject)(err);
+              } else {
+                if (response.rows) {
+                  forEach.call(response.rows, function(row) {
+                    if(!row["error"]){
+                      data.push(row.doc);
+                    } else {
+                      console.log('cannot find', row.key +":", row.error);
+                    }
+                  });
+                }
+                Ember.run(function(){
+                  self._resolveRelationships(store, type, data, options).then(function(data){
+                    Ember.run(null, resolve, data);
+                  });
                 });
               }
-              Ember.run(function(){
-                self._resolveRelationships(store, type, data, options).then(function(data){
-                  Ember.run(null, resolve, data);
-                });
-              });
-            }
-          });
+            });
+          } catch (err){
+            _pouchError(reject)(err);
+          }
         }, _pouchError(reject));
-      });
+      }, "findAll in ember-pouchdb-adapter");
     },
 
     findQuery: function(store, type, query, options) {
-      var self = this;
+      var self = this,
+          queryParams = {},
+          metaKeys = {_limit: 'limit', _skip: 'skip'},
+          metaAllKeys = ['_limit', '_skip'],
+          keys = [],
+          useFindAll = true;
 
       if(!options) options = {};
       if(Ember.isArray(options)) options = {array: options};
@@ -331,19 +403,33 @@
       if(Ember.isNone(options.embed)) options.embed = true;
 
       // select direct attributes only
-      var keys = [];
-      for (key in query) {
+      for (var key in query) {
         if (query.hasOwnProperty(key)) {
-          keys.push(key);
+          if(typeof metaKeys[key] !== 'undefined'){
+            queryParams[metaKeys[key]] = query[key];
+            if(!metaAllKeys.contains(key)){
+              useFindAll = false;
+            } else {
+              options[metaKeys[key]] = query[key];
+            }
+          } else {
+            keys.push(key);
+            useFindAll = false;
+          }
         }
       }
+      
+      // if query is empty use findAll, which is faster
+      if(useFindAll) return self.findAll(store, type, options);
 
-      var emitKeys = map.call(keys, function(key) {
-        if(key == "id") key = "_id";
+      var emitKeys = map.call(keys, function(key, idx) {
+        if(key === "id") key = "_id";
         return 'doc.' + key;
       });
       var queryKeys = map.call(keys, function(key) {
-        if(key == "_id" || key == "id") {
+        if(key.substring(key.length - 3) === "_id" || 
+           key.substring(key.length - 4) === "_ids" || 
+           key === "id") {
           return idToPouchId(query[key], type);
         }
         return query[key];
@@ -351,35 +437,44 @@
 
       // Very simple map function for a conjunction (AND) of all keys in the query
       var mapFn = 'function(doc) {' +
-            'if (doc._id.indexOf("_") > 0) {' +
-              'var type = doc._id.substring(0, doc._id.indexOf("_"));' +
-              'emit([type' + (emitKeys.length > 0 ? ',' : '') + emitKeys.join(',') + '], null);' +
+            'var uidx, type;' +
+            'if (doc._id && (uidx = doc._id.indexOf("_")) > 0) {' +
+            '  try {'+
+            '    type = doc._id.substring(0, uidx);' +
+            '    if(type == "'+type.typeKey+'")' +
+            '    emit([' + emitKeys.join(',') + '], null);' +
+            '  } catch (e) {}' +
             '}' +
           '}';
 
-      var startK = type.typeKey,
-          endK = startK + "~";
+      if(!Ember.isEmpty(queryKeys)){
+        queryParams["key"] = [].concat(queryKeys);
+      }
+      queryParams["include_docs"] = true;
+      queryParams["reduce"] = false;
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
-          db.query({map: mapFn}, 
-                   {reduce: false, startkey: [startK], endkey: [endK], key: [].concat(startK, queryKeys), include_docs: true}, 
-                   function(err, response) {
-            if (err) {
-              _pouchError(reject)(err);
-            } else {
-              if (response.rows) {
-                var data = Ember.A(response.rows).mapBy('doc');
-                Ember.run(function(){
-                  self._resolveRelationships(store, type, data, options).then(function(data){
-                    Ember.run(null, resolve, data);
+          try {
+            db.query({map: mapFn}, queryParams, function(err, response) {
+              if (err) {
+                _pouchError(reject)(err);
+              } else {
+                if (response.rows) {
+                  var data = Ember.A(response.rows).mapBy('doc');
+                  Ember.run(function(){
+                    self._resolveRelationships(store, type, data, options).then(function(data){
+                      Ember.run(null, resolve, data);
+                    });
                   });
-                });
+                }
               }
-            }
-          });
+            });
+          } catch (err){
+            _pouchError(reject)(err);
+          }
         }, _pouchError(reject));
-      });
+      }, "findQuery in ember-pouchdb-adapter");
     },
 
     // private
@@ -402,29 +497,40 @@
       var promises = Ember.A();
       var self = this;
 
+      function embedSideload(store, type, ids, mainItem){
+        return self.findMany(store, type, ids, {embed: false}).then(function(relations){
+          if(!Ember.isEmpty(relations)){
+            if(!mainItem['_embedded']) mainItem['_embedded'] = {};
+            mainItem['_embedded'][type] = Ember.makeArray(relations);
+          }
+        });
+      }
+
       forEach.call(items, function(item){
         //extract the id
         var itemId = serializer.normalize(type, {_id: item._id}).id;
         type.eachRelationship(function(key, relationship){
           var isSync = Ember.isNone(relationship.options.async);
-          var relType = relationship.type;
-          if(isSync && !Ember.isEmpty(get(item,key))){
+          if(isSync && !Ember.isEmpty(get(item, key))){
             var itemKeys = Ember.makeArray(get(item, key));
-            var deferred = self.findMany(store, relType, itemKeys, {embed: false});
-            deferred.then(function(relations){
-              if(!Ember.isEmpty(relations)){
-                if(!item['_embedded']){
-                  item['_embedded'] = {};
-                }
-                item['_embedded'][relType.typeKey] = Ember.makeArray(relations);
-              }
+            // divide ids in typed arrays 
+            // (in case of polymorphism many types are possible)
+            var typedItemsKeys = {};
+            forEach.call(itemKeys, function(i){
+              var idtype = pouchIdToIdType(i);
+              if(!typedItemsKeys[idtype[1]]) typedItemsKeys[idtype[1]] = [];
+              typedItemsKeys[idtype[1]].push(idtype[0]);
             });
-            promises.push(deferred);
+            for(var relType in typedItemsKeys){
+              if(!typedItemsKeys.hasOwnProperty(relType)) continue;
+              var relIds = typedItemsKeys[relType];
+              promises.push(embedSideload(store, relType, relIds, item));
+            }
           }
         });
       });
 
-      return Ember.RSVP.all(promises).then(function(results){
+      return Ember.RSVP.all(promises, '_resolveRelationships in ember-pouchdb-adapter').then(function(results){
         return items;
       });
     },
@@ -438,26 +544,36 @@
 
         var deferred = Ember.RSVP.defer();
         self._getDb().then(function(db){
-          db.get(idToPouchId(recId, recType), function(err, data){
-            if(err){
-              deferred.reject(err);
-            } else {
-              var other = data;
-              if(other[key] === oldVal && other[key] !== newVal){
-                other[key] = newVal;
-                db.put(other, function(err, res){
-                  if(err){
-                    deferred.reject(err);
-                  } else {
-                    deferred.resolve();
-                  }
-                });
+          try {
+            db.get(recId, function(err, data){
+              if(err || !data){
+                Ember.run(this, deferred.resolve);
               } else {
-                deferred.resolve();
+                var other = data;
+                if(other[key] === oldVal && other[key] !== newVal){
+                  other[key] = newVal;
+                  try {
+                    db.put(other, function(err, res){
+                      if(err){
+                        Ember.run(this, deferred.reject, err);
+                      } else {
+                        Ember.run(this, deferred.resolve);
+                      }
+                    });
+                  } catch (err){
+                    Ember.run(this, deferred.reject, err);
+                  }
+                } else {
+                  Ember.run(this, deferred.resolve);
+                }
               }
-            }
-          });
-        }, deferred.reject);
+            });
+          } catch (err){
+            Ember.run(this, deferred.reject, err);
+          }
+        }, function(err){
+          Ember.run(this, deferred.reject, err);
+        });
         return deferred.promise;
       };
 
@@ -466,34 +582,44 @@
 
         var deferred = Ember.RSVP.defer();
         self._getDb().then(function(db){
-          db.get(idToPouchId(recId, recType), function(err, data){
-            if(err){
-              deferred.reject(err);
-            } else {
-              var other = data;
-              if(other[key].indexOf && 
-                 (oldVal && other[key].indexOf(oldVal) >= 0) ||
-                 (newVal && other[key].indexOf(newVal) == -1)){
-                if(oldVal) {
-                  var index = other[key].indexOf(oldVal);
-                  delete other[key][index];
-                }
-                if(newVal) {
-                  other[key].push(newVal);
-                }
-                db.put(other, function(err, res){
-                  if(err){
-                    deferred.reject(err);
-                  } else {
-                    deferred.resolve();
-                  }
-                });
+          try {
+            db.get(recId, function(err, data){
+              if(err || !data){
+                Ember.run(this, deferred.resolve);
               } else {
-                deferred.resolve();
+                var other = data;
+                if(other[key].indexOf && 
+                   (oldVal && other[key].indexOf(oldVal) >= 0) ||
+                   (newVal && other[key].indexOf(newVal) == -1)){
+                  if(oldVal) {
+                    var index = other[key].indexOf(oldVal);
+                    delete other[key][index];
+                  }
+                  if(newVal) {
+                    other[key].push(newVal);
+                  }
+                  try {
+                    db.put(other, function(err, res){
+                      if(err){
+                        Ember.run(this, deferred.reject, err);
+                      } else {
+                        Ember.run(this, deferred.resolve);
+                      }
+                    });
+                  } catch (err){
+                    Ember.run(this, deferred.reject, err);
+                  }
+                } else {
+                  Ember.run(this, deferred.resolve);
+                }
               }
-            }
-          });
-        }, deferred.reject);
+            });
+          } catch (err){
+            Ember.run(this, deferred.reject, err);
+          }
+        }, function(err){
+          Ember.run(this, deferred.reject, err);
+        });
         return deferred.promise;
       };
 
@@ -515,8 +641,8 @@
           } else {
             updateMethod = updateHasMany;
           }
-          var othersOld = Ember.makeArray(oldHash[key]);
-          var othersNew = Ember.makeArray(newHash[key]);
+          var othersOld = Ember.makeArray(oldHash && oldHash[key]);
+          var othersNew = Ember.makeArray(newHash && newHash[key]);
           var idsWithRemovedRel = Ember.A(othersOld).reject(function(id){
             return othersNew.indexOf(id) >= 0;
           });
@@ -525,16 +651,29 @@
           });
           //remove old unlinked relationship(s)
           forEach.call(idsWithRemovedRel, function(o){
-            promises.push(updateMethod(o, otherType, otherKey, null, recordId));
+            var recPouchId = idToPouchId(recordId, recordType);
+            promises.push(updateMethod(o, otherType, otherKey, null, recPouchId));
           });
           //add new linked relationship(s)
           forEach.call(idsWithAddedRel, function(o){
-            promises.push(updateMethod(o, otherType, otherKey, recordId, null));
+            var recPouchId = idToPouchId(recordId, recordType);
+            promises.push(updateMethod(o, otherType, otherKey, recPouchId, null));
           });
         }
       });
 
-      return Ember.RSVP.all(promises);
+      return Ember.RSVP.all(promises, "_updateRelationships in ember-pouchdb-adapter");
+    },
+
+    /* Close the pouchdb database, when destroyed
+     */
+    destroy: function(){
+      if(this.db) {
+        Ember.RSVP.Promise.cast(this.db, 'PouchDB availability').then(function(db){
+          db.close();
+        });
+      }
+      this._super();
     },
 
     /**
@@ -560,7 +699,7 @@
         } else {
           Ember.run(null, resolve, self.db);
         }
-      });
+      }, 'PouchDB availability');
       
       if (!self.db) {
         self.db = promise;

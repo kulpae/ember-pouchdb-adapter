@@ -4,7 +4,7 @@
   "dependencies": {
     "ember": "~1",
     "ember-data": "~1.0.0",
-    "pouchdb": "master"
+    "pouchdb": "~2.1.0"
   },
   "ignore": [
     "**/.*",
@@ -13,5 +13,8 @@
     "bower_components",
     "test",
     "tests"
-  ]
+  ],
+  "devDependencies": {
+    "mockjs": "*"
+  }
 }
