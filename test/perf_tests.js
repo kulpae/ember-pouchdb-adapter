@@ -35,13 +35,24 @@ Ember.onerror = function(error){
 }
 
 perf.module("PouchDB directly", {
+  pre_module: function(test){
+    test.stop();
+    PouchDB.destroy("ember-pouchdb-direct-perftest", function(err, info){
+      if(err){
+        test.error(err);
+        test.start();
+      } else {
+        test.start();
+      }
+    });
+  },
   pre_test: function(test){
     test.stop();
     new PouchDB('ember-pouchdb-direct-perftest', function(err, db){
       if(err){
         test.error(err);
       } else {
-        pouchdb = db;
+        window.pouchdb = db;
         test.start();
       }
     });
@@ -191,6 +202,17 @@ perf.test("create & findQuery", function(test){
 });
 
 perf.module("Ember Data & Pouch Adapter", {
+  pre_module: function(test){
+    test.stop();
+    PouchDB.destroy("ember-pouchdb-adapter-perftest", function(err, info){
+      if(err){
+        test.error(err);
+        test.start();
+      } else {
+        test.start();
+      }
+    });
+  },
   pre_test: function(test){
     Ember.run(function(){
       App = Ember.Application.create({
@@ -213,152 +235,179 @@ perf.module("Ember Data & Pouch Adapter", {
   post_test: function(test){
     test.stop();
     Ember.run(function(){
-      App.destroy();
-      store.destroy();
       PouchDB.destroy("ember-pouchdb-adapter-perftest", function(err, info){
         if(err){
           test.error(err);
+          test.start();
         } else {
+          Ember.run(App, App.destroy);
+          Ember.run(store, store.destroy);
           test.start();
         }
       });
     });
-    App = null;
-    store = null;
   }
 });
 
+//helper methods from https://github.com/emberjs/data/tree/master/tests
+var syncForTest = window.syncForTest = function(fn) {
+  var callSuper;
+
+  if (typeof fn !== "function") { callSuper = true; }
+
+  return function() {
+    var override = false, ret;
+
+    if (Ember.run && !Ember.run.currentRunLoop) {
+      Ember.run.begin();
+      override = true;
+    }
+
+    try {
+      if (callSuper) {
+        ret = this._super.apply(this, arguments);
+      } else {
+        ret = fn.apply(this, arguments);
+      }
+    } finally {
+      if (override) {
+        Ember.run.end();
+      }
+    }
+
+    return ret;
+  };
+};
+
+Ember.RSVP.resolve = syncForTest(Ember.RSVP.resolve);
+
+Ember.View.reopen({
+  _insertElementLater: syncForTest()
+});
+
+DS.Store.reopen({
+  save: syncForTest(),
+  createRecord: syncForTest(),
+  deleteRecord: syncForTest(),
+  push: syncForTest(),
+  pushMany: syncForTest(),
+  filter: syncForTest(),
+  find: syncForTest(),
+  findMany: syncForTest(),
+  findByIds: syncForTest(),
+  didSaveRecord: syncForTest(),
+  didSaveRecords: syncForTest(),
+  didUpdateAttribute: syncForTest(),
+  didUpdateAttributes: syncForTest(),
+  didUpdateRelationship: syncForTest(),
+  didUpdateRelationships: syncForTest()
+});
+
+DS.Model.reopen({
+  save: syncForTest(),
+  reload: syncForTest(),
+  deleteRecord: syncForTest(),
+  dataDidChange: Ember.observer(syncForTest(), 'data'),
+  updateRecordArraysLater: syncForTest()
+});
+
+Ember.RSVP.Promise.prototype.then = syncForTest(Ember.RSVP.Promise.prototype.then);
+
 perf.test("create", function(test){
   test.stop();
-  Ember.run(function(){
-    docs['items'].reduce(function(prev, item){
-      return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save);
-        });
-      });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      test.start();
+  docs['items'].reduce(function(prev, item){
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save();
     });
+  }, Ember.RSVP.resolve()).then(function(){
+    test.start();
   });
 });
 
 perf.test("create & update", function(test){
   test.stop();
-  Ember.run(function(){
-    docs['items'].reduce(function(prev, item){
-      return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save).then(function(savedRecord){
-            savedRecord.set('test', 'newvalue');
-            return Ember.run(savedRecord, savedRecord.save);
-          });
-        });
+  docs['items'].reduce(function(prev, item){
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save().then(function(savedRecord){
+        savedRecord.set('test', 'newvalue');
+        return savedRecord.save();
       });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      test.start();
     });
+  }, Ember.RSVP.resolve()).then(function(){
+    test.start();
   });
 });
 
 perf.test("create & delete", function(test){
   test.stop();
-  Ember.run(function(){
-    docs['items'].reduce(function(prev, item){
-      return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save).then(function(savedRecord){
-            return Ember.run(savedRecord, savedRecord.destroyRecord);
-          });
-        });
+  docs['items'].reduce(function(prev, item){
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save().then(function(savedRecord){
+        return savedRecord.destroyRecord();
       });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      test.start();
     });
+    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
+      test.start();
   });
 });
 
 perf.test("create & findAll", function(test){
   test.stop();
-  Ember.run(function(){
-    docs['items'].reduce(function(prev, item){
-      return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save);
-        });
-      });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      Ember.run(function(){
-        store.find('item').then(function(items){
-          if(Ember.get(items, "length") == 200){
-            test.start();
-          } else {
-            test.error('returned an unexpected amount of data');
-            test.start();
-          }
-        });
-      });
+  docs['items'].reduce(function(prev, item){
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save();
+    });
+  }, Ember.RSVP.resolve()).then(function(){
+    store.find('item').then(function(items){
+      if(Ember.get(items, "length") == 200){
+        test.start();
+      } else {
+        test.error('returned an unexpected amount of data');
+        test.start();
+      }
     });
   });
 });
 
 perf.test("create & findSingle", function(test){
   test.stop();
-  Ember.run(function(){
+  docs['items'].reduce(function(prev, item){
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save();
+    });
+  }, Ember.RSVP.resolve()).then(function(){
     docs['items'].reduce(function(prev, item){
+      var id = item['id'];
       return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save);
-        });
+        return store.find('item', id);
       });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      Ember.run(function(){
-        docs['items'].reduce(function(prev, item){
-          var id = item['id'];
-          return prev.then(function(){
-            return Ember.run(store, store.find, 'item', id);
-          });
-        }, Ember.RSVP.resolve()).then(function(){
-          test.start();
-        });
-      });
+    }, Ember.RSVP.resolve()).then(function(){
+      test.start();
     });
   });
 });
 
 perf.test("create & findQuery", function(test){
   test.stop();
-  Ember.run(function(){
-    docs['items'].reduce(function(prev, item){
-      item['id'] = item['id'];
-      return prev.then(function(){
-        return Ember.run(function(){
-          var record = store.createRecord('item', item);
-          return Ember.run(record, record.save);
-        });
-      });
-    }, Ember.run(null, Ember.RSVP.resolve)).then(function(){
-      Ember.run.sync();
-      Ember.run(function(){
-        store.find('item', {test: 'value'}).then(function(items){
-          if(Ember.get(items, "length") == 200){
-            test.start();
-          } else {
-            test.error('returned an unexpected amount of data');
-            test.start();
-          }
-        });
-      });
+  docs['items'].reduce(function(prev, item){
+    item['id'] = item['id'];
+    return prev.then(function(){
+      var record = store.createRecord('item', item);
+      return record.save();
+    });
+  }, Ember.RSVP.resolve()).then(function(){
+    store.find('item', {test: 'value'}).then(function(items){
+      if(Ember.get(items, "length") == 200){
+        test.start();
+      } else {
+        test.error('returned an unexpected amount of data');
+        test.start();
+      }
     });
   });
 });

@@ -392,10 +392,12 @@
     findQuery: function(store, type, query, options) {
       var self = this,
           queryParams = {},
+          queryFunc = null,
           metaKeys = {_limit: 'limit', _skip: 'skip'},
           metaAllKeys = ['_limit', '_skip'],
           keys = [],
-          useFindAll = true;
+          useFindAll = true,
+          view = null;
 
       if(!options) options = {};
       if(Ember.isArray(options)) options = {array: options};
@@ -412,6 +414,9 @@
             } else {
               options[metaKeys[key]] = query[key];
             }
+          } else if(key == "_view"){
+            view = query[key];
+            useFindAll = false;
           } else {
             keys.push(key);
             useFindAll = false;
@@ -453,10 +458,16 @@
       queryParams["include_docs"] = true;
       queryParams["reduce"] = false;
 
+      if(Ember.isEmpty(view)){
+        queryFunc = {map: mapFn};
+      } else {
+        queryFunc = view;
+      }
+
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
           try {
-            db.query({map: mapFn}, queryParams, function(err, response) {
+            db.query(queryFunc, queryParams, function(err, response) {
               if (err) {
                 _pouchError(reject)(err);
               } else {
