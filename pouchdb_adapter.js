@@ -363,9 +363,9 @@
       }
       if(options.skip){
         skip = options.skip;
+        queryParams['skip'] = skip;
       }
 
-      queryParams['skip'] = skip;
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
@@ -396,7 +396,10 @@
               //on first call and then as long as data looks to be cut by limit
               if(!response || (response && response.rows.length >= stepLimit) && limit > 0){
                 db.allDocs(queryParams, function(err, data){
-                  queryParams['skip'] = parseInt(queryParams['skip']) + stepLimit;
+                  if(data && data.rows && data.rows.length > 0){
+                    queryParams['skip'] = 1;
+                    queryParams['startkey'] = data.rows[data.rows.length - 1].key;
+                  }
                   limit -= stepLimit;
                   if(err) {
                     Ember.run(nextDeferred, "reject", err);
