@@ -6,7 +6,7 @@ Ember.onerror = function(error){
 }
 
 Ember.RSVP.configure('onerror', function(error) {
-  console.log("error:", error.stack || error);
+  console.log("error:", (error && error.stack) || error);
   ok(false, error);
   start();
 });

@@ -1,6 +1,6 @@
 {
   "name": "ember-pouchdb-adapter",
-  "version": "1.0.0-beta.7a",
+  "version": "1.0.0-beta.7b",
   "dependencies": {
     "ember": "~1",
     "ember-data": "1.0.0-beta.7",

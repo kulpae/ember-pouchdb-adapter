@@ -569,4 +569,65 @@ asyncTest('create and find polymorphic relationship', function() {
   });
 });
 
+asyncTest('create and find 1024 items', function() {
+  expect(1);
+  Ember.run(function(){
+    var items = [];
+    for(var i = 0; i < 1024; i++){
+      items.addObject(store(App).createRecord('item', { id: 'i'+i, name: 'item'+i }));
+    }
+    items.reduce(function(p, n){
+      return p.then(function(){
+        return n.save();
+      });
+    }, Ember.RSVP.resolve()).then(function(res){
+      App = reset(App);
+      store(App).find('item').then(function(items){
+        equal(items.get('length'), 1024, 'should find 1024 items');
+        start();
+      });
+    });
+  });
+});
 
+asyncTest('create and find 1024 items and skip 500 items', function() {
+  expect(1);
+  Ember.run(function(){
+    var items = [];
+    for(var i = 0; i < 1024; i++){
+      items.addObject(store(App).createRecord('item', { id: 'i'+i, name: 'item'+i }));
+    }
+    items.reduce(function(p, n){
+      return p.then(function(){
+        return n.save();
+      });
+    }, Ember.RSVP.resolve()).then(function(res){
+      App = reset(App);
+      store(App).find('item', {_skip: 500}).then(function(items){
+        equal(items.get('length'), 524, 'should find 524 items');
+        start();
+      });
+    });
+  });
+});
+
+asyncTest('create 1024 items, but find the first 100', function() {
+  expect(1);
+  Ember.run(function(){
+    var items = [];
+    for(var i = 0; i < 1024; i++){
+      items.addObject(store(App).createRecord('item', { id: 'i'+i, name: 'item'+i }));
+    }
+    items.reduce(function(p, n){
+      return p.then(function(){
+        return n.save();
+      });
+    }, Ember.RSVP.resolve()).then(function(res){
+      App = reset(App);
+      store(App).find('item', {_limit: 100}).then(function(items){
+        equal(items.get('length'), 100, 'should find 100 items');
+        start();
+      });
+    });
+  });
+});
