@@ -42,7 +42,7 @@
     return pouchIdToIdType(id)[0];
   }
 
-  DS.PouchDBSerializer = DS.JSONSerializer.extend({
+  PouchDBSerializer = DS.JSONSerializer.extend({
     primaryKey: '_id',
 
     typeForRoot: function(root) {
@@ -53,25 +53,25 @@
     /**
      * Override to get the document revision that is stored on the record for PouchDB updates
      */
-    serialize: function(record, options) {
-      var json = this._super(record, options);
-      json._rev = get(record, 'data._rev');
+    serialize: function(snapshot, options) {
+      var json = this._super(snapshot, options);
+      json._rev = snapshot.record.get('data._rev');
       //append the type to _id, so that querying by type can utilize the order
-      json[get(this, 'primaryKey')] = idToPouchId(get(record, 'id'), record.constructor);
+      json[get(this, 'primaryKey')] = idToPouchId(snapshot.id, snapshot.type);
       return json;
     },
 
-    serializeHasMany: function(record, json, relationship){
-      this._super(record, json, relationship);
+    serializeHasMany: function(snapshot, json, relationship){
+      this._super(snapshot, json, relationship);
 
       var key = relationship.key;
-      json[key] = get(record, key).map(function(relItem){
-        return idToPouchId(relItem.get('id'), relItem.constructor || relItem.type || relationship.type);
+      json[key] = snapshot.hasMany(key).map(function(relItem){
+        return idToPouchId(relItem.id, relItem.type);
       }).concat([]);
     },
 
-    serializeBelongsTo: function(record, json, relationship) {
-      this._super(record, json, relationship);
+    serializeBelongsTo: function(snapshot, json, relationship) {
+      this._super(snapshot, json, relationship);
       var key = relationship.key;
       var type = relationship.type;
       if(json[key]) json[key] = idToPouchId(json[key], type);
@@ -79,11 +79,9 @@
 
     normalize: function(type, hash) {
       if(Ember.isEmpty(hash)) return hash;
-      hash.id = hash.id || hash._id;
-      if(hash.id){
-        hash.id = pouchIdToId(hash.id);
+      if(hash._id){
+        hash._id = pouchIdToId(hash._id);
       }
-      delete hash._id;
 
       return this._super(type, hash);
     },
@@ -159,7 +157,7 @@
    * Initially based on https://github.com/panayi/ember-data-indexeddb-adapter and https://github.com/wycats/indexeddb-experiment
    * then based on https://github.com/chlu/ember-pouchdb-adapter
    */
-  DS.PouchDBAdapter = DS.Adapter.extend({
+  PouchDBAdapter = DS.Adapter.extend({
     defaultSerializer: "_pouchdb",
     MAX_DOC_LIMIT: 500,
 
@@ -178,13 +176,14 @@
      Main hook for saving a newly created record.
 
      @param {DS.Store} store
-     @param {Class} type
-     @param {DS.Model} records
+     @param {subclass of DS.Model} type   the DS.Model class of the record
+     @param {DS.Snapshot} snapshot
+     @return {Promise} promise
      */
-    createRecord: function(store, type, record) {
+    createRecord: function(store, type, snapshot) {
       var self = this,
-          id = get(record, 'id'),
-          hash = self.serialize(record, { includeId: true });
+          id = snapshot.id,
+          hash = self.serialize(snapshot.record, { includeId: true });
 
       //having _rev would make an update and produce a missing revision
       delete hash._rev;
@@ -209,16 +208,17 @@
     },
 
     /**
-     Main hook for updating an existing record.
+     Main hook for updating an existing ember data snapshot.
 
      @param {DS.Store} store
-     @param {Class} type
-     @param {DS.Model} record
+     @param {subclass of DS.Model} type
+     @param {DS.Snapshot} ember data snapshot
+     @return {Promise} promise
      */
-    updateRecord: function(store, type, record) {
+    updateRecord: function(store, type, snapshot) {
       var self = this,
-          id = get(record, 'id'),
-          hash = this.serialize(record, { includeId: true });
+          id = snapshot.id,
+          hash = this.serialize(snapshot.record, { includeId: true });
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
@@ -253,10 +253,18 @@
       }, "updateRecord in ember-pouchdb-adapter");
     },
 
-    deleteRecord: function(store, type, record) {
+    /**
+     Main hook for removing an existing ember data snapshot from the database.
+
+     @param {DS.Store} store
+     @param {subclass of DS.Model} type   the DS.Model class of the record
+     @param {DS.Snapshot} snapshot
+     @return {Promise} promise
+     */
+    deleteRecord: function(store, type, snapshot) {
       var self = this,
-          id = record.get('id'),
-          hash = this.serialize(record, { includeId: true });
+          id = snapshot.id,
+          hash = this.serialize(snapshot.record, { includeId: true });
       
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
@@ -287,13 +295,31 @@
       }, "deleteRecord in ember-pouchdb-adapter");
     },
 
-    find: function(store, type, id) {
-      return this.findMany(store, type, [id]).then(function(data){
+    /** 
+      Main hook for retrieving a single record from the database.
+
+     @param {DS.Store} store
+     @param {subclass of DS.Model} type
+     @param {String} id
+     @param {DS.Snapshot} snapshot
+     @return {Promise} promise
+     */
+    find: function(store, type, id, snapshot) {
+      return this.findMany(store, type, [id], [snapshot]).then(function(data){
         return data[0] || {};
       });
     },
 
-    findMany: function(store, type, ids, options) {
+    /**
+     Main hook for retrieving a set of records of the same type specified by their ids.
+
+     @param {DS.Store} store
+     @param {subclass of DS.Model} type   the DS.Model class of the records
+     @param {Array}    ids
+     @param {Array} snapshots
+     @return {Promise} promise
+    */
+    findMany: function(store, type, ids, snapshots, options) {
       var self = this,
           data = Ember.A();
 
@@ -340,6 +366,14 @@
       }, "findMany in ember-pouchdb-adapter");
     },
 
+    /**
+     Main hook for retrieving all records of a type.
+
+     @param {DS.Store} store
+     @param {subclass of DS.Model} type
+     @param {String} sinceToken
+     @return {Promise} promise
+    */
     findAll: function(store, type, options) {
       var self = this,
           start = type.typeKey,
@@ -428,7 +462,16 @@
       }, "findAll in ember-pouchdb-adapter");
     },
 
-    findQuery: function(store, type, query, options) {
+    /**
+     Main hook for retrieving records of the same type which fulfill certain requirements described by the query.
+
+     @param {DS.Store} store
+     @param {subclass of DS.Model} type
+     @param {Object} query
+     @param {DS.AdapterPopulatedRecordArray} recordArray
+     @return {Promise} promise
+    */
+    findQuery: function(store, type, query, recordArray, options) {
       var self = this,
           queryParams = {},
           queryFunc = null,
@@ -548,7 +591,7 @@
       var self = this;
 
       function embedSideload(store, type, ids, mainItem){
-        return self.findMany(store, type, ids, {embed: false}).then(function(relations){
+        return self.findMany(store, type, ids, [], {embed: false}).then(function(relations){
           if(!Ember.isEmpty(relations)){
             if(!mainItem['_embedded']) mainItem['_embedded'] = {};
             mainItem['_embedded'][type] = Ember.makeArray(relations);
@@ -770,8 +813,8 @@ Ember.onLoad('Ember.Application', function(Application) {
     name: "PouchDBAdapter",
 
     initialize: function(container, application) {
-      application.register('serializer:_pouchdb', DS.PouchDBSerializer);
-      application.register('adapter:_pouchdb', DS.PouchDBAdapter);
+      application.register('serializer:_pouchdb', PouchDBSerializer);
+      application.register('adapter:_pouchdb', PouchDBAdapter);
     }
   });
 });

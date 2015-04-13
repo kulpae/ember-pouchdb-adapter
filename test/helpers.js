@@ -35,7 +35,7 @@ function createApp(){
       children: DS.hasMany('node', {polymorphic: true})
     });
 
-    var adapter = DS.PouchDBAdapter.extend({
+    var adapter = PouchDBAdapter.extend({
       databaseName: 'ember-pouchdb-test'
     });
 
@@ -72,4 +72,8 @@ function reset(app){
 
 function store(app){
   return app.__container__.lookup("store:main");
+}
+
+function adapter(app){
+  return app.__container__.lookup("adapter:application");
 }

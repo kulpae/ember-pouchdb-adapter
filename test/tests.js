@@ -11,9 +11,11 @@ module('DS.PouchDBAdapter', {
 
   teardown: function() {
     stop();
-    PouchDB.destroy('ember-pouchdb-test', function() {
-      destroyApp(App);
-      start();
+    adapter(App)._getDb().then(function(db) {
+      db.destroy().then(function(){
+        destroyApp(App);
+        start();
+      });
     });
   }
 
@@ -21,21 +23,30 @@ module('DS.PouchDBAdapter', {
 
 test('existence', function() {
   expect(1);
-  ok(DS.PouchDBAdapter, 'PouchDBAdapter added to DS namespace');
+  ok(PouchDBAdapter, 'PouchDBAdapter should exist');
 });
 
 asyncTest('error reporting', function() {
   expect(1);
   Ember.run(function(){
-    //provoke an error, as %l2 is not a valid id
-    var record = store(App).createRecord('list', { id: '%l2', name: 'two', b: true});
-    record.save().then(function() {
-      ok(false, 'should have thrown an error');
-    }, function(err){
-      ok(true, 'has thrown an error as intended');
-    }).finally(function(){
-      record.destroy();
-      start();
+    //provoke an error by inserting a doc with the same pouch id, so that
+    //a "document update conflict" occurs
+    adapter(App)._getDb().then(function(db){
+      db.put({
+        "_id": 'list_l2'
+      }).then(function(){
+        Ember.run(function(){
+          var record = store(App).createRecord('list', { id: 'l2', name: 'two', b: true});
+          record.save().then(function() {
+            ok(false, 'should have thrown an error');
+          }, function(err){
+            ok(true, 'has thrown an error as intended');
+          }).finally(function(){
+            record.destroy();
+            start();
+          });
+        });
+      });
     });
   });
 });

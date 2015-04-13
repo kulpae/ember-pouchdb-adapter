@@ -219,7 +219,7 @@ perf.module("Ember Data & Pouch Adapter", {
         Item: DS.Model.extend({
           test: DS.attr('string')
         }),
-        ApplicationAdapter: DS.PouchDBAdapter.extend({
+        ApplicationAdapter: PouchDBAdapter.extend({
           databaseName: 'ember-pouchdb-adapter-perftest'
         }),
         ApplicationStore: DS.Store.extend({ isCustom: true })
