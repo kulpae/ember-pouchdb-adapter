@@ -183,7 +183,7 @@
     createRecord: function(store, type, snapshot) {
       var self = this,
           id = snapshot.id,
-          hash = self.serialize(snapshot.record, { includeId: true });
+          hash = self.serialize(snapshot, { includeId: true });
 
       //having _rev would make an update and produce a missing revision
       delete hash._rev;
@@ -218,7 +218,7 @@
     updateRecord: function(store, type, snapshot) {
       var self = this,
           id = snapshot.id,
-          hash = this.serialize(snapshot.record, { includeId: true });
+          hash = this.serialize(snapshot, { includeId: true });
 
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
@@ -264,7 +264,7 @@
     deleteRecord: function(store, type, snapshot) {
       var self = this,
           id = snapshot.id,
-          hash = this.serialize(snapshot.record, { includeId: true });
+          hash = this.serialize(snapshot, { includeId: true });
       
       return new Ember.RSVP.Promise(function(resolve, reject){
         self._getDb().then(function(db){
