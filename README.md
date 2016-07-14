@@ -1,45 +1,51 @@
 
-PouchDB 2.1 adapter for Ember Data 1.0.0
+PouchDB 5.3.1 adapter for Ember Data 2.5.0
 ========================================
 
 This Ember-Data adapter allows an Ember.js app with Ember-Data model
 layer to store its data in PouchDB databases.
 
-PouchDB makes it possible to synchronize the data with CouchDB and 
+PouchDB makes it possible to synchronize the data with CouchDB and
 keep the data on the client-side persistently, i.e. surviving browser refreshes
 and restarts. PouchDB automatically detects available backends on the client, e.g.
 IndexedDB, WebSQL or even LocalStorage and more.
 
 
-Ember Data 1.0.0 is still not released [(and probably won't)](http://emberjs.com/blog/2014/03/18/the-road-to-ember-data-1-0.html),
-so this project is aimed at supporting the latest beta release until
-there is a stable branch.
-
-This project supports PouchDB 2.1, it may work with previous versions, though.
-The main focus is to use all the latest features of PouchDB to enhance performance,
-therefore this may break the backwards compatibility.
+This adapter will sideload non-async records and push them to the store. It is
+not recommended to use syncroneus relationships though, just let the store
+decide when to fetch the data asynchronously. This feature will be dropped, when
+there are no syncronous relationships in Ember-Data anymore, as it is clumpy and
+slow.
 
 Usage
 -----
 
-```javascript
-App = Ember.Application.create();
+Create a new adapter (e.g. ember g adapter application):
 
-App.ApplicationAdapter = DS.PouchDBAdapter.extend({
-  databaseName: 'myapp'
+```javascript
+import {Adapter as PouchDBAdapter} from 'ember-pouchdb-adapter';
+import Ember from 'ember';
+
+export default PouchDBAdapter.extend({
+  databaseName: "my-local-db"
 });
 ```
+
+The models should define the properties ```id``` and ```rev``` as strings, at
+least.
 
 Future Plans
 ------------
 
-* use strict jshint
 * Support interoperability between many pouchdb databases and
   records in different adapters having the PouchDB serializer
-* remove sideloading (when Ember-Data supports truly async relationships)
 * add batch save (when Ember-Data supports it)
-* support Ember-Data SSOT, allowing to remove redundant both-sided relationship keys 
-  and expensive consistency keeping on writes
+
+## Running Tests
+
+* `npm test` (Runs `ember try:testall` to test your addon against multiple Ember versions)
+* `ember test`
+* `ember test --server`
 
 Author
 ------
@@ -47,8 +53,4 @@ Author
 Paul Koch (kulpae)
 
 http://uraniumlane.net
-
-
-
-
 
